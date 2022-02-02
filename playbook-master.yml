@@ -1,0 +1,135 @@
+---
+
+- hosts: all
+  become: true
+  tasks:
+    - name: install pkgs
+      apt:
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg-agent
+          - software-properties-common
+
+    - name: add an apt signing key for Docker
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: add an apt repository for stable version
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+
+    - name: install docker and its dependecies
+      apt: 
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - docker-ce 
+          - docker-ce-cli 
+          - containerd.io
+      notify:
+        - docker status
+
+    - name: add vagrant user to docker group
+      user:
+        name: vagrant
+        group: docker
+
+    - name: configure docker daemon
+      copy:
+        src: daemon.json
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: restart docker daemon
+      service:
+        name: docker
+        state: restarted
+
+    - name: remove swapfile from /etc/fstab
+      mount:
+        name: "{{ item }}"
+        fstype: swap
+        state: absent
+      with_items:
+        - swap
+        - none
+
+    - name: disable swap
+      command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+    - name: add an apt signing key for Kubernetes
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: add an apt repository for Kubernetes
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: kubernetes.list
+
+    - name: install Kubernetes binaries
+      apt: 
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - kubelet=1.23.3-00
+          - kubeadm=1.23.3-00
+          - kubectl=1.23.3-00
+
+    - name: configure node ip
+      lineinfile:
+        path: /etc/default/kubelet
+        line: KUBELET_EXTRA_ARGS=--node-ip={{ node_ip }}
+        create: yes
+
+    - name: restart kubelet
+      service:
+        name: kubelet
+        daemon_reload: yes
+        state: restarted
+
+    - name: initialize the Kubernetes cluster using kubeadm
+      command: |
+        kubeadm init \
+          --apiserver-advertise-address="192.168.50.10" \
+          --apiserver-cert-extra-sans="192.168.50.10" \
+          --node-name k8s-master \
+          --pod-network-cidr=192.168.0.0/16
+
+    - name: setup kubeconfig for vagrant user
+      command: "{{ item }}"
+      with_items:
+        - mkdir -p /home/vagrant/.kube
+        - cp -i /etc/kubernetes/admin.conf /home/vagrant/.kube/config
+        - chown vagrant:vagrant /home/vagrant/.kube/config
+
+    - name: install calico pod network
+      become: false
+      command: kubectl create -f https://projectcalico.docs.tigera.io/manifests/calico.yaml
+
+    - name: generate join command
+      command: kubeadm token create --print-join-command
+      register: join_command
+
+    - name: copy join command to local file
+      local_action: copy content="{{ join_command.stdout_lines[0] }}" dest="./join-command"
+
+  handlers:
+    - name: docker status
+      service: name=docker state=started
