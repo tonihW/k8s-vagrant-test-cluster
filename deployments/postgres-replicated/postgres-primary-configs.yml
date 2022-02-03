@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-primary-configs
+data:
+  run-db-migrations.sh: |
+    #!/bin/bash
+    set -e
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -f "0_setup-replication.sql"
+  0_setup-replication.sql: |
+    CREATE ROLE replication_user WITH REPLICATION PASSWORD 'replication_pass' LOGIN;
+    SELECT * FROM pg_create_physical_replication_slot('replica_1_slot');
